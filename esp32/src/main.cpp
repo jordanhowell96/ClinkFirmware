@@ -7,7 +7,7 @@
 // recieve ack (shared library for methods?)
 
 #define BT_NAME "Clink"
-#define DEBUG_BAUD 115200
+#define DEBUG_BAUD 9600
 #define SERIAL_BAUD 9600
 #define BT_TIMEOUT 10000
 #define BT_FAIL_TIMEOUT 1000
