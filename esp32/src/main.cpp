@@ -2,9 +2,7 @@
 #include <BluetoothSerial.h>
 #include <vector>
 
-// print version and other startup info
-// debug flag
-// recieve ack (shared library for methods?)
+// receive ack (shared library for methods?)
 
 #define BT_NAME "Clink"
 #define DEBUG_BAUD 9600
@@ -17,6 +15,10 @@
 #define RX_PIN 16
 #define TX_PIN 17
 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+
+HardwareSerial DebugSerial = Serial;
+HardwareSerial ProMicroSerial = Serial1;
 BluetoothSerial SerialBT;
 std::vector<String> targetMACs;
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -26,16 +28,17 @@ unsigned long btFailedTime = 0;
 unsigned long btStartTime = 0;
 unsigned long ledOnTime = 0;
 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
-  Serial.printf("Found device: %s\n", pDevice->toString().c_str());
+  DebugSerial.printf("Found device: %s\n", pDevice->toString().c_str());
   String deviceMAC = pDevice->getAddress().toString();
   deviceMAC.toLowerCase(); 
 
   for (String mac : targetMACs) {
     if (deviceMAC.equals(mac)) {
-      Serial.printf("Detected target device with MAC: %s\n", deviceMAC.c_str());
-      Serial1.println("DETECTED:" + deviceMAC);
+      DebugSerial.printf("Detected target device with MAC: %s\n", deviceMAC.c_str());
+      ProMicroSerial.println("DETECTED:" + deviceMAC);
       digitalWrite(INTERNAL_LED, HIGH);
       ledOnTime = millis();
       break;
@@ -45,11 +48,11 @@ void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
 
 void startAsyncDiscovery() {
   if (SerialBT.discoverAsync(btAdvertisedDeviceFound)) {
-    Serial.println("Bluetooth discovery began");
+    DebugSerial.println("Bluetooth discovery began");
     btStartTime = millis();
     btFailed = false;
   } else {
-    Serial.println("Error starting Bluetooth discovery");
+    DebugSerial.println("Error starting Bluetooth discovery");
     btFailedTime = millis();
     btFailed = true;
   }
@@ -72,14 +75,14 @@ void updateMACList(String macList) {
 
 void receiveMACUpdates() {
   String latestData = "";
-  while (Serial1.available()) {
-    latestData = Serial1.readStringUntil('\n');
+  while (ProMicroSerial.available()) {
+    latestData = ProMicroSerial.readStringUntil('\n');
   }
   latestData.trim();
 
   if (!latestData.isEmpty()) {
-    Serial.println("Received MAC list: " + latestData);
-    Serial1.println("ACK:" + latestData);
+    DebugSerial.println("Received MAC list: " + latestData);
+    ProMicroSerial.println("ACK:" + latestData);
     updateMACList(latestData);
   }
 }
@@ -94,7 +97,7 @@ void checkLedOff() {
 
 void checkBTFailed() {
   if (btFailed && millis() > btFailedTime + BT_FAIL_TIMEOUT) {
-    Serial.println("Retrying Bluetooth discovery...");
+    DebugSerial.println("Retrying Bluetooth discovery...");
     startAsyncDiscovery();
   }
 }
@@ -103,18 +106,18 @@ void checkBTFailed() {
 void refreshBT() {
   if (millis() > btStartTime + BT_TIMEOUT) {
     SerialBT.discoverAsyncStop();
-    Serial.println("Restarting Bluetooth discovery... ");
+    DebugSerial.println("Restarting Bluetooth discovery... ");
     startAsyncDiscovery();
   }
 }
 
 
 void setup() {
-  Serial.begin(DEBUG_BAUD);
-  Serial1.begin(SERIAL_BAUD, SERIAL_8N1, RX_PIN, TX_PIN);
+  DebugSerial.begin(DEBUG_BAUD);
+  ProMicroSerial.begin(SERIAL_BAUD, SERIAL_8N1, RX_PIN, TX_PIN);
   pinMode(INTERNAL_LED, OUTPUT);
   SerialBT.begin(BT_NAME);
-  Serial.println("Starting Bluetooth discovery... ");
+  DebugSerial.println("Starting Bluetooth discovery... ");
   startAsyncDiscovery();
 }
 

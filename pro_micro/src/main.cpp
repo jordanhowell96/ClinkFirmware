@@ -1,13 +1,16 @@
 #include <Arduino.h>
-#include <HID-Project.h> // HID-Project by NicoHood
- // 40:1b:5f:6b:59:cd
+#include <HID-Project.h> // 40:1b:5f:6b:59:cd
  
-// TODO
-// refactor with method signatures?
+// replace String with const char*?
 // send invisible key press
 // consider edge cases like multiple transmissions before ack etc
 
-// debug flag
+String macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
+const char* passCode = "6890";
+
+#define DEBUG true
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 #define START_SIGNAL "START"
 
@@ -27,6 +30,8 @@
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
+#define DEBUG_PRINTLN(x)  do { if (DEBUG) PCSerial.println(x); } while (0)
+
 const char* pcState = NO_SIGNAL_STATE;
 
 unsigned long lastPcContact = 0;
@@ -40,32 +45,33 @@ String detectedMAC = "";
 
 char serialBuffer[SERIAL_BUFFER_SIZE];
 
-String macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,";
+Serial_ PCSerial = Serial;
+HardwareSerial ESP32Serial = Serial1;
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 void typeString(const char* str) {
-    for (int i = 0; str[i] != '\0'; i++) {
-        char c = str[i];
-        Keyboard.press(c);
-        delay(5);
-        Keyboard.release(c);
-    }
+  for (int i = 0; str[i] != '\0' && !DEBUG; i++) {
+      char c = str[i];
+      Keyboard.press(c);
+      delay(5);
+      Keyboard.release(c);
+  }
 }
 
 
 void initializePC() {       
   if (pcState == UNLOCKED_STATE) {
-    Serial.println(START_SIGNAL);
+    PCSerial.println(START_SIGNAL);
 
   } else if (pcState == AWAKE_STATE) {
-    typeString("6890");
+    typeString(passCode);
     delay(UNLOCK_DELAY);
 
   } else if (pcState == NO_SIGNAL_STATE) {
-    Keyboard.press(KEY_SPACE);
+    Keyboard.press(0x00);
     delay(20);
-    Keyboard.release(KEY_SPACE);
+    Keyboard.release(0x00);
     delay(WAKE_DELAY);
   }
 }
@@ -82,8 +88,8 @@ const char* parseSignal(const char* signal) {
 void receivePCSerial() {
   static int bufferIndex = 0;
 
-  while (Serial.available() > 0) {
-    char receivedChar = Serial.read();
+  while (PCSerial.available() > 0) {
+    char receivedChar = PCSerial.read();
 
     if (receivedChar == '\n' || receivedChar == '\r') {
       serialBuffer[bufferIndex] = '\0';
@@ -105,32 +111,33 @@ void receivePCSerial() {
 
 
 void receiveESP32Serial() {
-  while (Serial1.available() > 0) {
-    String message = Serial1.readStringUntil('\n');
+  while (ESP32Serial.available() > 0) {
+    String message = ESP32Serial.readStringUntil('\n');
     message.trim();
 
     if (message.startsWith("ACK:")) {  
       String receivedList = message.substring(4);
       if (receivedList ==  macList) {
-        Serial.println("ACK received: " + message);
+        DEBUG_PRINTLN("ACK received: " + message);
         ackReceived = true;
         lastAckTime = millis();
       } else {
-        Serial.println("Incorrect ACK received: " + message);
+        DEBUG_PRINTLN("Incorrect ACK received: " + message);
     }
 
     } else if (message.startsWith("DETECTED:")) {  
       detectedMAC = message.substring(9);
-      Serial.println("Device Found: " + detectedMAC);
+      DEBUG_PRINTLN("Device Found: " + detectedMAC);
       detectedReceived = true;
       lastBtContact = millis();
     }
   }
 }
 
+
 void sendMACList() {
-  Serial1.println(macList);
-  Serial.println("Sent MAC list, waiting for ACK...");
+  ESP32Serial.println(macList);
+  DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
   lastMacSendTime = millis();
 }
 
@@ -138,11 +145,12 @@ void sendMACList() {
 // TODO develop this
 void retransmitMACList() {
   if (ackReceived && millis() > lastAckTime + ACK_TIMEOUT) {
-    Serial.println("ACK timeout reached! Resetting ACK status."); // this log sucks
+    DEBUG_PRINTLN("ACK timeout reached"); // this log sucks
     ackReceived = false;
   }
 
   if (!ackReceived && millis() > lastMacSendTime + 5000) {
+    DEBUG_PRINTLN("Retransmitting MAC list, waiting for ACK...");
     sendMACList();
     //retryCount++; TODO use retry count to send error message to 
   }
@@ -150,8 +158,8 @@ void retransmitMACList() {
 
 
 void setup() {
-  Serial.begin(9600);
-  Serial1.begin(9600);
+  PCSerial.begin(9600);
+  ESP32Serial.begin(9600);
   Keyboard.begin();
 }
 
@@ -163,7 +171,7 @@ void loop() {
   retransmitMACList();
 
   if (detectedReceived) {  
-    Serial.println("ESP32 detected device: " + detectedMAC);
+    DEBUG_PRINTLN("ESP32 detected device: " + detectedMAC);
     //initializePC();
     detectedReceived = false;
   }
