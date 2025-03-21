@@ -1,12 +1,17 @@
 #include <Arduino.h>
-#include <HID-Project.h> // 40:1b:5f:6b:59:cd
+#include <HID-Project.h> 
+// 40:1b:5f:6b:59:cd
  
+// restore base logic
 // replace String with const char*?
-// send invisible key press
+// send ack
+// split files
 // consider edge cases like multiple transmissions before ack etc
 
 String macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
-const char* passCode = "6890";
+const char* passCode = "6890"; // for testing
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 #define DEBUG true
 
@@ -30,7 +35,9 @@ const char* passCode = "6890";
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
-#define DEBUG_PRINTLN(x)  do { if (DEBUG) PCSerial.println(x); } while (0)
+#define DEBUG_PRINTLN(x)  if (DEBUG) Serial.println(x)
+#define SEND_TO_PC(x)  if (!DEBUG) Serial.println(x)
+#define SEND_TO_ESP32(x)  Serial1.println(x)
 
 const char* pcState = NO_SIGNAL_STATE;
 
@@ -44,9 +51,6 @@ bool detectedReceived = false;
 String detectedMAC = "";
 
 char serialBuffer[SERIAL_BUFFER_SIZE];
-
-Serial_ PCSerial = Serial;
-HardwareSerial ESP32Serial = Serial1;
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
@@ -62,7 +66,7 @@ void typeString(const char* str) {
 
 void initializePC() {       
   if (pcState == UNLOCKED_STATE) {
-    PCSerial.println(START_SIGNAL);
+    SEND_TO_PC(START_SIGNAL);
 
   } else if (pcState == AWAKE_STATE) {
     typeString(passCode);
@@ -88,8 +92,8 @@ const char* parseSignal(const char* signal) {
 void receivePCSerial() {
   static int bufferIndex = 0;
 
-  while (PCSerial.available() > 0) {
-    char receivedChar = PCSerial.read();
+  while (Serial.available() > 0) {
+    char receivedChar = Serial.read();
 
     if (receivedChar == '\n' || receivedChar == '\r') {
       serialBuffer[bufferIndex] = '\0';
@@ -111,8 +115,8 @@ void receivePCSerial() {
 
 
 void receiveESP32Serial() {
-  while (ESP32Serial.available() > 0) {
-    String message = ESP32Serial.readStringUntil('\n');
+  while (Serial1.available() > 0) {
+    String message = Serial1.readStringUntil('\n');
     message.trim();
 
     if (message.startsWith("ACK:")) {  
@@ -136,7 +140,7 @@ void receiveESP32Serial() {
 
 
 void sendMACList() {
-  ESP32Serial.println(macList);
+  SEND_TO_ESP32(macList);
   DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
   lastMacSendTime = millis();
 }
@@ -158,8 +162,8 @@ void retransmitMACList() {
 
 
 void setup() {
-  PCSerial.begin(9600);
-  ESP32Serial.begin(9600);
+  Serial.begin(9600);
+  Serial1.begin(9600); // having this as ESP32Serial instead of Serial1 hangs 
   Keyboard.begin();
 }
 
