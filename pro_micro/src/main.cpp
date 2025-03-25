@@ -1,14 +1,13 @@
 #include <Arduino.h>
 #include <HID-Project.h> 
 // 40:1b:5f:6b:59:cd
- 
-// restore base logic
-// replace String with const char*?
+
 // send ack
 // split files
+// global variables
 // consider edge cases like multiple transmissions before ack etc
 
-String macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
+const char* macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
 const char* passCode = "6890"; // for testing
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
@@ -23,7 +22,6 @@ const char* passCode = "6890"; // for testing
 #define NO_SIGNAL_STATE "NO_SIGNAL_STATE"
 #define AWAKE_STATE "AWAKE_STATE"
 #define UNLOCKED_STATE "UNLOCKED_STATE"
-// #define PLAYING_STATE "PLAYING_STATE" // maybe not needed
 
 #define STATE_EXPIRATION 2000
 #define BT_EXPIRATION 5000
@@ -39,7 +37,14 @@ const char* passCode = "6890"; // for testing
 #define SEND_TO_PC(x)  if (!DEBUG) Serial.println(x)
 #define SEND_TO_ESP32(x)  Serial1.println(x)
 
-const char* pcState = NO_SIGNAL_STATE;
+enum PcState {
+  NO_SIGNAL,
+  AWAKE,
+  UNLOCKED,
+  INVALID
+};
+
+PcState pcState = NO_SIGNAL;
 
 unsigned long lastPcContact = 0;
 unsigned long lastBtContact = 0;
@@ -65,14 +70,14 @@ void typeString(const char* str) {
 
 
 void initializePC() {       
-  if (pcState == UNLOCKED_STATE) {
+  if (pcState == UNLOCKED) {
     SEND_TO_PC(START_SIGNAL);
 
-  } else if (pcState == AWAKE_STATE) {
+  } else if (pcState == AWAKE) {
     typeString(passCode);
     delay(UNLOCK_DELAY);
 
-  } else if (pcState == NO_SIGNAL_STATE) {
+  } else if (pcState == NO_SIGNAL) {
     Keyboard.press(0x00);
     delay(20);
     Keyboard.release(0x00);
@@ -81,14 +86,13 @@ void initializePC() {
 }
 
 
-const char* parseSignal(const char* signal) {
-  if (strcmp(signal, UNLOCKED_STATE) == 0) return UNLOCKED_STATE;
-  if (strcmp(signal, AWAKE_STATE) == 0) return AWAKE_STATE;
-  // if (strcmp(signal, PLAYING_STATE) == 0) return PLAYING_STATE;
-  return nullptr;
+PcState parseSignal(const char* signal) {
+  if (strcmp(signal, "UNLOCKED_STATE") == 0) return UNLOCKED;
+  if (strcmp(signal, "AWAKE_STATE") == 0) return AWAKE;
+  return INVALID;
 }
 
-// todo test later with only readStringUntil('\n') and check if ESP should use a similar method
+
 void receivePCSerial() {
   static int bufferIndex = 0;
 
@@ -97,16 +101,31 @@ void receivePCSerial() {
 
     if (receivedChar == '\n' || receivedChar == '\r') {
       serialBuffer[bufferIndex] = '\0';
-      const char* newState = parseSignal(serialBuffer);
+      bufferIndex = 0;
 
-      if (newState != nullptr) {
+      PcState newState = parseSignal(serialBuffer);
+      if (newState != INVALID) {
         pcState = newState;
         lastPcContact = millis();
+        return;
       }
 
-      bufferIndex = 0;
+      if (strncmp(serialBuffer, "MAC:", 4) == 0) {
+        macList = String(serialBuffer + 4);
+        SEND_TO_ESP32(macList.c_str());
+      }
+
+      if (strchr(serialBuffer, ':') && strchr(serialBuffer, ',')) {
+        DEBUG_PRINTLN("MAC list received from PC");
+        SEND_TO_ESP32(serialBuffer);  // Forward to ESP32
+        DEBUG_PRINTLN("MAC list forwarded to ESP32");
+
+        ackReceived = false;
+        lastMacSendTime = millis();
+      }
+
     } else {
-      if (bufferIndex < SERIAL_BUFFER_SIZE - 1) { 
+      if (bufferIndex < SERIAL_BUFFER_SIZE - 1) {
         serialBuffer[bufferIndex++] = receivedChar;
       }
     }
@@ -149,7 +168,7 @@ void sendMACList() {
 // TODO develop this
 void retransmitMACList() {
   if (ackReceived && millis() > lastAckTime + ACK_TIMEOUT) {
-    DEBUG_PRINTLN("ACK timeout reached"); // this log sucks
+    DEBUG_PRINTLN("ACK timeout reached");
     ackReceived = false;
   }
 
@@ -163,7 +182,7 @@ void retransmitMACList() {
 
 void setup() {
   Serial.begin(9600);
-  Serial1.begin(9600); // having this as ESP32Serial instead of Serial1 hangs 
+  Serial1.begin(9600);
   Keyboard.begin();
 }
 
@@ -171,22 +190,21 @@ void setup() {
 void loop() {     
   receivePCSerial();
   receiveESP32Serial();
-  sendMACList();
   retransmitMACList();
 
   if (detectedReceived) {  
     DEBUG_PRINTLN("ESP32 detected device: " + detectedMAC);
-    //initializePC();
+    initializePC();
     detectedReceived = false;
   }
   
-  // if (pcState != NO_SIGNAL_STATE && millis() > STATE_EXPIRATION + lastPcContact) {
-  //   pcState = NO_SIGNAL_STATE; 
-  // }
+  if (pcState != NO_SIGNAL && millis() > STATE_EXPIRATION + lastPcContact) {
+    pcState == NO_SIGNAL; 
+  }
   
-  // if (millis() lastBtContact < BT_EXPIRATION + lastBtContact) {
-  //   initializePC();
-  // }
+  if (millis() > BT_EXPIRATION + lastBtContact) {
+    initializePC();
+  }
 
-  delay(5000);         // todo maybe not needed
+  delay(5000);         // for testing
 }

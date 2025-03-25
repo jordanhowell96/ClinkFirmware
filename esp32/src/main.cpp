@@ -5,6 +5,7 @@
 // fix jumbled characters at the start of the serial monitor
 // bluetooth discovery is restarting early
 // receive ack (shared library for methods?)
+// receive serial method
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
@@ -26,7 +27,7 @@
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 #define DEBUG_PRINTLN(x)  if (DEBUG) Serial.println(x)
-#define DEBUG_PRINTF(x, y)  if (DEBUG) Serial.printf(x, y)
+#define DEBUG_PRINTF(...)  if (DEBUG) Serial.printf(__VA_ARGS__)
 #define SEND_TO_PRO_MIC(x)  Serial1.println(x)
 
 BluetoothSerial SerialBT;
@@ -91,7 +92,7 @@ void receiveMACUpdates() {
   latestData.trim();
 
   if (!latestData.isEmpty()) {
-    DEBUG_PRINTLN("Received MAC list: " + latestData);
+    DEBUG_PRINTF("Received MAC list: %s\n", latestData.c_str());
     SEND_TO_PRO_MIC("ACK:" + latestData);
     updateMACList(latestData);
   }
