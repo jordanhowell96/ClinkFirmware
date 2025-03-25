@@ -2,12 +2,13 @@
 #include <HID-Project.h> 
 // 40:1b:5f:6b:59:cd
 
+// receive ack logic
 // send ack
 // split files
 // global variables
 // consider edge cases like multiple transmissions before ack etc
 
-const char* macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
+const char* currentMacList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
 const char* passCode = "6890"; // for testing
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
@@ -111,23 +112,12 @@ void receivePCSerial() {
       }
 
       if (strncmp(serialBuffer, "MAC:", 4) == 0) {
-        macList = String(serialBuffer + 4);
-        SEND_TO_ESP32(macList.c_str());
+        currentMacList = serialBuffer + 4;
+        sendMACList();
       }
 
-      if (strchr(serialBuffer, ':') && strchr(serialBuffer, ',')) {
-        DEBUG_PRINTLN("MAC list received from PC");
-        SEND_TO_ESP32(serialBuffer);  // Forward to ESP32
-        DEBUG_PRINTLN("MAC list forwarded to ESP32");
-
-        ackReceived = false;
-        lastMacSendTime = millis();
-      }
-
-    } else {
-      if (bufferIndex < SERIAL_BUFFER_SIZE - 1) {
+    } else if (bufferIndex < SERIAL_BUFFER_SIZE - 1) { 
         serialBuffer[bufferIndex++] = receivedChar;
-      }
     }
   }
 }
@@ -140,7 +130,7 @@ void receiveESP32Serial() {
 
     if (message.startsWith("ACK:")) {  
       String receivedList = message.substring(4);
-      if (receivedList ==  macList) {
+      if (receivedList == currentMacList) {
         DEBUG_PRINTLN("ACK received: " + message);
         ackReceived = true;
         lastAckTime = millis();
@@ -159,7 +149,7 @@ void receiveESP32Serial() {
 
 
 void sendMACList() {
-  SEND_TO_ESP32(macList);
+  SEND_TO_ESP32(currentMacList);
   DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
   lastMacSendTime = millis();
 }
@@ -205,6 +195,4 @@ void loop() {
   if (millis() > BT_EXPIRATION + lastBtContact) {
     initializePC();
   }
-
-  delay(5000);         // for testing
 }
