@@ -1,14 +1,13 @@
 #include <Arduino.h>
 #include <HID-Project.h> 
-// 40:1b:5f:6b:59:cd
+// 40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,
 
 // receive ack logic
 // send ack
 // split files
-// global variables
 // consider edge cases like multiple transmissions before ack etc
+// remove colon from mac
 
-const char* currentMacList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,"; // for testing
 const char* passCode = "6890"; // for testing
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
@@ -19,7 +18,6 @@ const char* passCode = "6890"; // for testing
 
 #define START_SIGNAL "START"
 
-// enum for state?
 #define NO_SIGNAL_STATE "NO_SIGNAL_STATE"
 #define AWAKE_STATE "AWAKE_STATE"
 #define UNLOCKED_STATE "UNLOCKED_STATE"
@@ -30,13 +28,18 @@ const char* passCode = "6890"; // for testing
 #define WAKE_DELAY 2000
 #define ACK_TIMEOUT 5000 // adjust
 
-#define SERIAL_BUFFER_SIZE 32  
+#define PC_SERIAL_BUFFER_SIZE 32  
+#define ESP_SERIAL_BUFFER_SIZE 32  
+#define MAC_LIST_BUFFER_SIZE 128
+#define MAC_ADDR_BUFFER_SIZE 18
+#define PRINTF_BUFFER_SIZE 128
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 #define DEBUG_PRINTLN(x)  if (DEBUG) Serial.println(x)
+#define DEBUG_PRINTF(...)  if (DEBUG) serialPrintf(__VA_ARGS__)
 #define SEND_TO_PC(x)  if (!DEBUG) Serial.println(x)
-#define SEND_TO_ESP32(x)  Serial1.println(x)
+#define SEND_TO_ESP(x)  Serial1.println(x)
 
 enum PcState {
   NO_SIGNAL,
@@ -54,11 +57,22 @@ unsigned long lastAckTime = 0;
 
 bool ackReceived = false;
 bool detectedReceived = false;
-String detectedMAC = "";
 
 char serialBuffer[SERIAL_BUFFER_SIZE];
+char currentMacList[MAC_LIST_BUFFER_SIZE] = "";
+char detectedMAC[MAC_ADDR_BUFFER_SIZE];
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+
+void serialPrintf(const char* fmt, ...) {
+  char buf[PRINTF_BUFFER_SIZE];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, PRINTF_BUFFER_SIZE, fmt, args);
+  va_end(args);
+  Serial.print(buf);
+}
+
 
 void typeString(const char* str) {
   for (int i = 0; str[i] != '\0' && !DEBUG; i++) {
@@ -88,59 +102,73 @@ void initializePC() {
 
 
 PcState parseSignal(const char* signal) {
-  if (strcmp(signal, "UNLOCKED_STATE") == 0) return UNLOCKED;
-  if (strcmp(signal, "AWAKE_STATE") == 0) return AWAKE;
+  if (strcmp(signal, UNLOCKED_STATE) == 0) return UNLOCKED;
+  if (strcmp(signal, AWAKE_STATE) == 0) return AWAKE;
   return INVALID;
 }
 
 
+template<typename StreamType>
+bool readSerialLine(StreamType& serial, char* buffer, size_t bufferSize, int& bufferIndex) {
+  while (serial.available() > 0) {
+    char c = serial.read();
+
+    if (c == '\n' || c == '\r') {
+      buffer[bufferIndex] = '\0';
+      bufferIndex = 0;
+      return true;
+    } else if (bufferIndex < bufferSize - 1) {
+      buffer[bufferIndex++] = c;
+    }
+  }
+  return false;
+}
+
+
 void receivePCSerial() {
+  static char serialBuffer[PC_SERIAL_BUFFER_SIZE];
   static int bufferIndex = 0;
 
-  while (Serial.available() > 0) {
-    char receivedChar = Serial.read();
+  if (readSerialLine(Serial, serialBuffer, SERIAL_BUFFER_SIZE, bufferIndex)) {
+    PcState newState = parseSignal(serialBuffer);
+    if (newState != INVALID) {
+      pcState = newState;
+      lastPcContact = millis();
+      return;
+    }
 
-    if (receivedChar == '\n' || receivedChar == '\r') {
-      serialBuffer[bufferIndex] = '\0';
-      bufferIndex = 0;
-
-      PcState newState = parseSignal(serialBuffer);
-      if (newState != INVALID) {
-        pcState = newState;
-        lastPcContact = millis();
-        return;
-      }
-
-      if (strncmp(serialBuffer, "MAC:", 4) == 0) {
-        currentMacList = serialBuffer + 4;
-        sendMACList();
-      }
-
-    } else if (bufferIndex < SERIAL_BUFFER_SIZE - 1) { 
-        serialBuffer[bufferIndex++] = receivedChar;
+    if (strncmp(serialBuffer, "MAC:", 4) == 0) {
+      strncpy(currentMacList, serialBuffer + 4, MAC_LIST_BUFFER_SIZE - 1);
+      currentMacList[MAC_LIST_BUFFER_SIZE - 1] = '\0';
+      sendMACList();
     }
   }
 }
 
 
 void receiveESP32Serial() {
-  while (Serial1.available() > 0) {
-    String message = Serial1.readStringUntil('\n');
-    message.trim();
+  static char espSerialBuffer[ESP_SERIAL_BUFFER_SIZE];
+  static int bufferIndex = 0;
 
-    if (message.startsWith("ACK:")) {  
-      String receivedList = message.substring(4);
-      if (receivedList == currentMacList) {
-        DEBUG_PRINTLN("ACK received: " + message);
+  if (readSerialLine(Serial1, espSerialBuffer, SERIAL_BUFFER_SIZE, bufferIndex)) {
+    if (strncmp(espSerialBuffer, "ACK:", 4) == 0) {
+      char receivedList[MAC_LIST_BUFFER_SIZE];
+      strncpy(receivedList, espSerialBuffer + 4, MAC_LIST_BUFFER_SIZE - 1);
+      receivedList[MAC_LIST_BUFFER_SIZE - 1] = '\0';
+
+      if (strcmp(receivedList, currentMacList) == 0) {
+        DEBUG_PRINTLN("ACK received");
         ackReceived = true;
         lastAckTime = millis();
       } else {
-        DEBUG_PRINTLN("Incorrect ACK received: " + message);
-    }
+        DEBUG_PRINTLN("Incorrect ACK received");
+      }
 
-    } else if (message.startsWith("DETECTED:")) {  
-      detectedMAC = message.substring(9);
-      DEBUG_PRINTLN("Device Found: " + detectedMAC);
+    } else if (strncmp(espSerialBuffer, "DETECTED:", 9) == 0) {
+      strncpy(detectedMAC, espSerialBuffer + 9, MAC_ADDR_BUFFER_SIZE - 1);
+      detectedMAC[MAC_ADDR_BUFFER_SIZE - 1] = '\0';
+
+      DEBUG_PRINTF("Device Found: %s\n", detectedMAC);
       detectedReceived = true;
       lastBtContact = millis();
     }
@@ -149,7 +177,7 @@ void receiveESP32Serial() {
 
 
 void sendMACList() {
-  SEND_TO_ESP32(currentMacList);
+  SEND_TO_ESP(currentMacList);
   DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
   lastMacSendTime = millis();
 }
@@ -183,7 +211,6 @@ void loop() {
   retransmitMACList();
 
   if (detectedReceived) {  
-    DEBUG_PRINTLN("ESP32 detected device: " + detectedMAC);
     initializePC();
     detectedReceived = false;
   }
