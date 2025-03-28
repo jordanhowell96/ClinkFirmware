@@ -26,12 +26,13 @@ const char* passCode = "6890"; // for testing
 #define BT_EXPIRATION 5000
 #define UNLOCK_DELAY 2000
 #define WAKE_DELAY 2000
-#define ACK_TIMEOUT 5000 // adjust
+#define ACK_TIMEOUT 2000
 
+// adjust buffer sizes and show max supported size
 #define PC_SERIAL_BUFFER_SIZE 32  
 #define ESP_SERIAL_BUFFER_SIZE 32  
-#define MAC_LIST_BUFFER_SIZE 128
-#define MAC_ADDR_BUFFER_SIZE 18
+#define MAC_LIST_BUFFER_SIZE 255
+#define MAC_ADDR_BUFFER_SIZE 16
 #define PRINTF_BUFFER_SIZE 128
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
@@ -41,7 +42,7 @@ const char* passCode = "6890"; // for testing
 #define SEND_TO_PC(x)  if (!DEBUG) Serial.println(x)
 #define SEND_TO_ESP(x)  Serial1.println(x)
 
-enum PcState {
+enum PcState : uint8_t {
   NO_SIGNAL,
   AWAKE,
   UNLOCKED,
@@ -55,7 +56,8 @@ unsigned long lastBtContact = 0;
 unsigned long lastMacSendTime = 0;
 unsigned long lastAckTime = 0;
 
-bool ackReceived = false;
+bool awaitingAck = false;
+uint8_t retryCount = 0;
 bool detectedReceived = false;
 
 char serialBuffer[SERIAL_BUFFER_SIZE];
@@ -75,7 +77,7 @@ void serialPrintf(const char* fmt, ...) {
 
 
 void typeString(const char* str) {
-  for (int i = 0; str[i] != '\0' && !DEBUG; i++) {
+  for (uint8_t i = 0; str[i] != '\0' && !DEBUG; i++) {
       char c = str[i];
       Keyboard.press(c);
       delay(5);
@@ -108,8 +110,8 @@ PcState parseSignal(const char* signal) {
 }
 
 
-template<typename StreamType>
-bool readSerialLine(StreamType& serial, char* buffer, size_t bufferSize, int& bufferIndex) {
+template<typename SerialType>
+bool readSerialLine(SerialType& serial, char* buffer, size_t bufferSize, unsigned int& bufferIndex) {
   while (serial.available() > 0) {
     char c = serial.read();
 
@@ -125,14 +127,25 @@ bool readSerialLine(StreamType& serial, char* buffer, size_t bufferSize, int& bu
 }
 
 
+void sendMACList() {
+  if (strlen(currentMacList) == 0) return;
+  SEND_TO_ESP(currentMacList);
+  DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
+  lastMacSendTime = millis();
+  awaitingAck = true;
+}
+
+
 void receivePCSerial() {
   static char serialBuffer[PC_SERIAL_BUFFER_SIZE];
-  static int bufferIndex = 0;
+  static unsigned int bufferIndex = 0;
 
-  if (readSerialLine(Serial, serialBuffer, SERIAL_BUFFER_SIZE, bufferIndex)) {
+  if (readSerialLine(Serial, serialBuffer, PC_SERIAL_BUFFER_SIZE, bufferIndex)) {
     PcState newState = parseSignal(serialBuffer);
+
     if (newState != INVALID) {
       pcState = newState;
+      DEBUG_PRINTF("PC State Updated: %d\n", pcState);
       lastPcContact = millis();
       return;
     }
@@ -140,6 +153,8 @@ void receivePCSerial() {
     if (strncmp(serialBuffer, "MAC:", 4) == 0) {
       strncpy(currentMacList, serialBuffer + 4, MAC_LIST_BUFFER_SIZE - 1);
       currentMacList[MAC_LIST_BUFFER_SIZE - 1] = '\0';
+      DEBUG_PRINTF("MAC List Received: %s\n", currentMacList);
+      retryCount = 0;
       sendMACList();
     }
   }
@@ -148,9 +163,9 @@ void receivePCSerial() {
 
 void receiveESP32Serial() {
   static char espSerialBuffer[ESP_SERIAL_BUFFER_SIZE];
-  static int bufferIndex = 0;
+  static unsigned int bufferIndex = 0;
 
-  if (readSerialLine(Serial1, espSerialBuffer, SERIAL_BUFFER_SIZE, bufferIndex)) {
+  if (readSerialLine(Serial1, espSerialBuffer, ESP_SERIAL_BUFFER_SIZE, bufferIndex)) {
     if (strncmp(espSerialBuffer, "ACK:", 4) == 0) {
       char receivedList[MAC_LIST_BUFFER_SIZE];
       strncpy(receivedList, espSerialBuffer + 4, MAC_LIST_BUFFER_SIZE - 1);
@@ -158,7 +173,7 @@ void receiveESP32Serial() {
 
       if (strcmp(receivedList, currentMacList) == 0) {
         DEBUG_PRINTLN("ACK received");
-        ackReceived = true;
+        awaitingAck = false;  
         lastAckTime = millis();
       } else {
         DEBUG_PRINTLN("Incorrect ACK received");
@@ -176,24 +191,11 @@ void receiveESP32Serial() {
 }
 
 
-void sendMACList() {
-  SEND_TO_ESP(currentMacList);
-  DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
-  lastMacSendTime = millis();
-}
-
-
-// TODO develop this
 void retransmitMACList() {
-  if (ackReceived && millis() > lastAckTime + ACK_TIMEOUT) {
-    DEBUG_PRINTLN("ACK timeout reached");
-    ackReceived = false;
-  }
-
-  if (!ackReceived && millis() > lastMacSendTime + 5000) {
-    DEBUG_PRINTLN("Retransmitting MAC list, waiting for ACK...");
+  if (awaitingAck && millis() > lastMacSendTime + ACK_TIMEOUT) {
+    retryCount++;
+    DEBUG_PRINTF("ACK not Received, retransmitting MAC list (Retries: %s)\n", retryCount);
     sendMACList();
-    //retryCount++; TODO use retry count to send error message to 
   }
 }
 
