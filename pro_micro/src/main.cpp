@@ -3,7 +3,6 @@
 // 40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,
 
 // receive ack logic
-// send ack
 // split files
 // consider edge cases like multiple transmissions before ack etc
 // remove colon from mac
@@ -38,9 +37,10 @@ const char* passCode = "6890"; // for testing
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
 #define DEBUG_PRINTLN(x)  if (DEBUG) Serial.println(x)
-#define DEBUG_PRINTF(...)  if (DEBUG) serialPrintf(__VA_ARGS__)
+#define DEBUG_PRINTF(...)  if (DEBUG) serialPrintf(Serial, __VA_ARGS__)
 #define SEND_TO_PC(x)  if (!DEBUG) Serial.println(x)
 #define SEND_TO_ESP(x)  Serial1.println(x)
+#define SEND_TO_ESP_F(...)  serialPrintf(Serial1, __VA_ARGS__)
 
 enum PcState : uint8_t {
   NO_SIGNAL,
@@ -66,13 +66,14 @@ char detectedMAC[MAC_ADDR_BUFFER_SIZE];
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
-void serialPrintf(const char* fmt, ...) {
+template<typename SerialType>
+void serialPrintf(SerialType& serial, const char* fmt, ...) {
   char buf[PRINTF_BUFFER_SIZE];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, PRINTF_BUFFER_SIZE, fmt, args);
   va_end(args);
-  Serial.print(buf);
+  serial.print(buf);
 }
 
 
@@ -182,7 +183,8 @@ void receiveESP32Serial() {
     } else if (strncmp(espSerialBuffer, "DETECTED:", 9) == 0) {
       strncpy(detectedMAC, espSerialBuffer + 9, MAC_ADDR_BUFFER_SIZE - 1);
       detectedMAC[MAC_ADDR_BUFFER_SIZE - 1] = '\0';
-
+      
+      SEND_TO_ESP_F("ACK:%s\n", detectedMAC);
       DEBUG_PRINTF("Device Found: %s\n", detectedMAC);
       detectedReceived = true;
       lastBtContact = millis();
