@@ -191,7 +191,7 @@ void loop() {
   }
   
   if (pcState != NO_SIGNAL && millis() > STATE_EXPIRATION + lastPcContact) {
-    pcState == NO_SIGNAL; 
+    pcState = NO_SIGNAL; 
   }
   
   if (millis() > BT_EXPIRATION + lastBtContact) {
