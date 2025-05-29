@@ -27,4 +27,4 @@
 #define DEBUG_PRINTF(...)  if (DEBUG) serialPrintf(Serial, __VA_ARGS__)
 #define SEND_TO_PC(x)  if (!DEBUG) Serial.println(x)
 #define SEND_TO_ESP(x)  Serial1.println(x)
-#define SEND_TO_ESP_F(...)  serialPrintf(Serial1, __VA_ARGS__)
+#define SEND_TO_ESP_F(...)  Serial1.printf(Serial1, __VA_ARGS__)
