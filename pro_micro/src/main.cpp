@@ -1,150 +1,174 @@
 #include <Arduino.h>
-#include <HID-Project.h> // HID-Project by NicoHood
- // 40:1b:5f:6b:59:cd
- 
-// TODO
-// refactor with method signatures?
-// send invisible key press
+#include <HID-Project.h> 
+#include <Constants.h>
+
+// 40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,
+
+// receive ack logic
+// split files
 // consider edge cases like multiple transmissions before ack etc
+// remove colon from mac
 
-// debug flag
-
-#define START_SIGNAL "START"
-
-// enum for state?
-#define NO_SIGNAL_STATE "NO_SIGNAL_STATE"
-#define AWAKE_STATE "AWAKE_STATE"
-#define UNLOCKED_STATE "UNLOCKED_STATE"
-// #define PLAYING_STATE "PLAYING_STATE" // maybe not needed
-
-#define STATE_EXPIRATION 2000
-#define BT_EXPIRATION 5000
-#define UNLOCK_DELAY 2000
-#define WAKE_DELAY 2000
-#define ACK_TIMEOUT 5000 // adjust
-
-#define SERIAL_BUFFER_SIZE 32  
+const char* passCode = "6890"; // for testing
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
-const char* pcState = NO_SIGNAL_STATE;
+enum PcState : uint8_t {
+  NO_SIGNAL,
+  AWAKE,
+  UNLOCKED,
+  INVALID
+};
+
+PcState pcState = NO_SIGNAL;
 
 unsigned long lastPcContact = 0;
 unsigned long lastBtContact = 0;
 unsigned long lastMacSendTime = 0;
 unsigned long lastAckTime = 0;
 
-bool ackReceived = false;
+bool awaitingAck = false;
+uint8_t retryCount = 0;
 bool detectedReceived = false;
-String detectedMAC = "";
 
 char serialBuffer[SERIAL_BUFFER_SIZE];
-
-String macList = "40:1b:5f:6b:59:cd,dc:0c:2d:43:7f:51,";
+char currentMacList[MAC_LIST_BUFFER_SIZE] = "";
+char detectedMAC[MAC_ADDR_BUFFER_SIZE];
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 
+template<typename SerialType>
+void serialPrintf(SerialType& serial, const char* fmt, ...) {
+  char buf[PRINTF_BUFFER_SIZE];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, PRINTF_BUFFER_SIZE, fmt, args);
+  va_end(args);
+  serial.print(buf);
+}
+
+
 void typeString(const char* str) {
-    for (int i = 0; str[i] != '\0'; i++) {
-        char c = str[i];
-        Keyboard.press(c);
-        delay(5);
-        Keyboard.release(c);
-    }
+  for (uint8_t i = 0; str[i] != '\0' && !DEBUG; i++) {
+      char c = str[i];
+      Keyboard.press(c);
+      delay(5);
+      Keyboard.release(c);
+  }
 }
 
 
 void initializePC() {       
-  if (pcState == UNLOCKED_STATE) {
-    Serial.println(START_SIGNAL);
+  if (pcState == UNLOCKED) {
+    SEND_TO_PC(START_SIGNAL);
 
-  } else if (pcState == AWAKE_STATE) {
-    typeString("6890");
+  } else if (pcState == AWAKE) {
+    typeString(passCode);
     delay(UNLOCK_DELAY);
 
-  } else if (pcState == NO_SIGNAL_STATE) {
-    Keyboard.press(KEY_SPACE);
+  } else if (pcState == NO_SIGNAL) {
+    Keyboard.press(0x00);
     delay(20);
-    Keyboard.release(KEY_SPACE);
+    Keyboard.release(0x00);
     delay(WAKE_DELAY);
   }
 }
 
 
-const char* parseSignal(const char* signal) {
-  if (strcmp(signal, UNLOCKED_STATE) == 0) return UNLOCKED_STATE;
-  if (strcmp(signal, AWAKE_STATE) == 0) return AWAKE_STATE;
-  // if (strcmp(signal, PLAYING_STATE) == 0) return PLAYING_STATE;
-  return nullptr;
+PcState parseSignal(const char* signal) {
+  if (strcmp(signal, UNLOCKED_STATE) == 0) return UNLOCKED;
+  if (strcmp(signal, AWAKE_STATE) == 0) return AWAKE;
+  return INVALID;
 }
 
-// todo test later with only readStringUntil('\n') and check if ESP should use a similar method
-void receivePCSerial() {
-  static int bufferIndex = 0;
 
-  while (Serial.available() > 0) {
-    char receivedChar = Serial.read();
+template<typename SerialType>
+bool readSerialLine(SerialType& serial, char* buffer, size_t bufferSize, unsigned int& bufferIndex) {
+  while (serial.available() > 0) {
+    char c = serial.read();
 
-    if (receivedChar == '\n' || receivedChar == '\r') {
-      serialBuffer[bufferIndex] = '\0';
-      const char* newState = parseSignal(serialBuffer);
-
-      if (newState != nullptr) {
-        pcState = newState;
-        lastPcContact = millis();
-      }
-
+    if (c == '\n' || c == '\r') {
+      buffer[bufferIndex] = '\0';
       bufferIndex = 0;
-    } else {
-      if (bufferIndex < SERIAL_BUFFER_SIZE - 1) { 
-        serialBuffer[bufferIndex++] = receivedChar;
-      }
+      return true;
+    } else if (bufferIndex < bufferSize - 1) {
+      buffer[bufferIndex++] = c;
+    }
+  }
+  return false;
+}
+
+
+void sendMACList() {
+  if (strlen(currentMacList) == 0) return;
+  SEND_TO_ESP(currentMacList);
+  DEBUG_PRINTLN("Sent MAC list, waiting for ACK...");
+  lastMacSendTime = millis();
+  awaitingAck = true;
+}
+
+
+void receivePCSerial() {
+  static char serialBuffer[PC_SERIAL_BUFFER_SIZE];
+  static unsigned int bufferIndex = 0;
+
+  if (readSerialLine(Serial, serialBuffer, PC_SERIAL_BUFFER_SIZE, bufferIndex)) {
+    PcState newState = parseSignal(serialBuffer);
+
+    if (newState != INVALID) {
+      pcState = newState;
+      DEBUG_PRINTF("PC State Updated: %d\n", pcState);
+      lastPcContact = millis();
+      return;
+    }
+
+    if (strncmp(serialBuffer, "MAC:", 4) == 0) {
+      strncpy(currentMacList, serialBuffer + 4, MAC_LIST_BUFFER_SIZE - 1);
+      currentMacList[MAC_LIST_BUFFER_SIZE - 1] = '\0';
+      DEBUG_PRINTF("MAC List Received: %s\n", currentMacList);
+      retryCount = 0;
+      sendMACList();
     }
   }
 }
 
 
 void receiveESP32Serial() {
-  while (Serial1.available() > 0) {
-    String message = Serial1.readStringUntil('\n');
-    message.trim();
+  static char espSerialBuffer[ESP_SERIAL_BUFFER_SIZE];
+  static unsigned int bufferIndex = 0;
 
-    if (message.startsWith("ACK:")) {  
-      String receivedList = message.substring(4);
-      if (receivedList ==  macList) {
-        Serial.println("ACK received: " + message);
-        ackReceived = true;
+  if (readSerialLine(Serial1, espSerialBuffer, ESP_SERIAL_BUFFER_SIZE, bufferIndex)) {
+    if (strncmp(espSerialBuffer, "ACK:", 4) == 0) {
+      char receivedList[MAC_LIST_BUFFER_SIZE];
+      strncpy(receivedList, espSerialBuffer + 4, MAC_LIST_BUFFER_SIZE - 1);
+      receivedList[MAC_LIST_BUFFER_SIZE - 1] = '\0';
+
+      if (strcmp(receivedList, currentMacList) == 0) {
+        DEBUG_PRINTLN("ACK received");
+        awaitingAck = false;  
         lastAckTime = millis();
       } else {
-        Serial.println("Incorrect ACK received: " + message);
-    }
+        DEBUG_PRINTLN("Incorrect ACK received");
+      }
 
-    } else if (message.startsWith("DETECTED:")) {  
-      detectedMAC = message.substring(9);
-      Serial.println("Device Found: " + detectedMAC);
+    } else if (strncmp(espSerialBuffer, "DETECTED:", 9) == 0) {
+      strncpy(detectedMAC, espSerialBuffer + 9, MAC_ADDR_BUFFER_SIZE - 1);
+      detectedMAC[MAC_ADDR_BUFFER_SIZE - 1] = '\0';
+      
+      SEND_TO_ESP_F("ACK:%s\n", detectedMAC);
+      DEBUG_PRINTF("Device Found: %s\n", detectedMAC);
       detectedReceived = true;
       lastBtContact = millis();
     }
   }
 }
 
-void sendMACList() {
-  Serial1.println(macList);
-  Serial.println("Sent MAC list, waiting for ACK...");
-  lastMacSendTime = millis();
-}
 
-
-// TODO develop this
 void retransmitMACList() {
-  if (ackReceived && millis() > lastAckTime + ACK_TIMEOUT) {
-    Serial.println("ACK timeout reached! Resetting ACK status."); // this log sucks
-    ackReceived = false;
-  }
-
-  if (!ackReceived && millis() > lastMacSendTime + 5000) {
+  if (awaitingAck && millis() > lastMacSendTime + ACK_TIMEOUT) {
+    retryCount++;
+    DEBUG_PRINTF("ACK not Received, retransmitting MAC list (Retries: %s)\n", retryCount);
     sendMACList();
-    //retryCount++; TODO use retry count to send error message to 
   }
 }
 
@@ -159,22 +183,18 @@ void setup() {
 void loop() {     
   receivePCSerial();
   receiveESP32Serial();
-  sendMACList();
   retransmitMACList();
 
   if (detectedReceived) {  
-    Serial.println("ESP32 detected device: " + detectedMAC);
-    //initializePC();
+    initializePC();
     detectedReceived = false;
   }
   
-  // if (pcState != NO_SIGNAL_STATE && millis() > STATE_EXPIRATION + lastPcContact) {
-  //   pcState = NO_SIGNAL_STATE; 
-  // }
+  if (pcState != NO_SIGNAL && millis() > STATE_EXPIRATION + lastPcContact) {
+    pcState = NO_SIGNAL; 
+  }
   
-  // if (millis() lastBtContact < BT_EXPIRATION + lastBtContact) {
-  //   initializePC();
-  // }
-
-  delay(5000);         // todo maybe not needed
+  if (millis() > BT_EXPIRATION + lastBtContact) {
+    initializePC();
+  }
 }
